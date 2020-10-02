@@ -1,0 +1,229 @@
+service:
+  name: app-fitness-capstone
+
+plugins:
+  - serverless-webpack
+  - serverless-iam-roles-per-function
+  - serverless-reqvalidator-plugin
+  - serverless-aws-documentation
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+
+  stage: ${opt:stage, 'prod'}
+  region: ${opt:region, 'us-east-2'}
+
+  environment:
+    FITNESS_TABLE: fitness-${self:provider.stage}
+    AVAILABLE_INDEX: AvailableIndex
+    FITNESS_IMAGES_S3_BUCKET: app-fitness-${self:provider.stage}
+    SIGNED_URL_EXPIRATION: 0
+
+custom:
+  documentation:
+    api:
+      info:
+        version: v1.0.0
+        title: Fitness API
+        description: Serverless App for Fitness
+    models:
+      - name: CreateRequest
+        contentType: application/json
+        schema: ${file(validators/create-request.json)}
+
+functions:
+  Auth:
+    handler: src/lambda/auth/auth0Authorizer.handler
+
+  GetFitness:
+    handler: src/lambda/http/getAvailableFitness.handler
+    events:
+      - http:
+          method: get
+          path: fitness/available
+          cors: false
+          authorizer: Auth
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.FITNESS_TABLE}/index/${self:provider.environment.AVAILABLE_INDEX}
+
+  GetUserFitness:
+    handler: src/lambda/http/getUserFitness.handler
+    events:
+      - http:
+          method: get
+          path: fitness/me
+          cors: true
+          authorizer: Auth
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.FITNESS_TABLE}
+
+  CreateFitness:
+    handler: src/lambda/http/createFitness.handler
+    events:
+      - http:
+          method: post
+          path: fitness
+          cors: true
+          authorizer: Auth
+          reqValidatorName: RequestBodyValidator
+          documentation:
+            summary: Create a new Fitness
+            description: Create a Fitness
+            requestModels:
+              "application/json": CreateRequest
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:PutItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.FITNESS_TABLE}
+
+  Fitness:
+    handler: src/lambda/http/fitness.handler
+    events:
+      - http:
+          method: patch
+          path: fitness/{fitnessId}/{userId}/fitness
+          cors: true
+          authorizer: Auth
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:UpdateItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.FITNESS_TABLE}
+
+  AvailableFitness:
+    handler: src/lambda/http/availableFitness.handler
+    events:
+      - http:
+          method: patch
+          path: fitness/{fitnessId}/available
+          cors: true
+          authorizer: Auth
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:UpdateItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.FITNESS_TABLE}
+
+  DeleteFitness:
+    handler: src/lambda/http/deleteFitness.handler
+    events:
+      - http:
+          method: delete
+          path: fitness/{fitnessId}
+          cors: true
+          authorizer: Auth
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:DeleteItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.FITNESS_TABLE}
+
+  GenerateUploadUrl:
+    handler: src/lambda/http/generateUploadUrl.handler
+    events:
+      - http:
+          method: post
+          path: fitness/{fitnessId}/attachment
+          cors: true
+          authorizer: Auth
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - s3:PutObject
+          - s3:GetObject
+        Resource: arn:aws:s3:::${self:provider.environment.FITNESS_IMAGES_S3_BUCKET}/*
+      - Effect: Allow
+        Action:
+          - dynamodb:UpdateItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.FITNESS_TABLE}
+
+resources:
+  Resources:
+    RequestBodyValidator:
+      Type: AWS::ApiGateway::RequestValidator
+      Properties:
+        Name: "request-body-validator"
+        RestApiId:
+          Ref: ApiGatewayRestApi
+        ValidateRequestBody: true
+        ValidateRequestParameters: false
+
+    GatewayResponseDefault4XX:
+      Type: AWS::ApiGateway::GatewayResponse
+      Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+          gatewayresponse.header.Access-Control-Allow-Methods: "'*'"
+        ResponseType: DEFAULT_4XX
+        RestApiId:
+          Ref: ApiGatewayRestApi
+
+    FitnessTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: fitnessId
+            AttributeType: S
+          - AttributeName: available
+            AttributeType: S
+          - AttributeName: createdAt
+            AttributeType: S
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+          - AttributeName: fitnessId
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST
+        TableName: ${self:provider.environment.FITNESS_TABLE}
+        GlobalSecondaryIndexes:
+          - IndexName: ${self:provider.environment.AVAILABLE_INDEX}
+            KeySchema:
+              - AttributeName: available
+                KeyType: HASH
+              - AttributeName: createdAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+
+    AttachmentsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.FITNESS_IMAGES_S3_BUCKET}
+        CorsConfiguration:
+          CorsRules:
+            - AllowedOrigins:
+                - "*"
+              AllowedHeaders:
+                - "*"
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+                - DELETE
+                - HEAD
+              MaxAge: 3000
+
+    BucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        PolicyDocument:
+          Id: MyPolicy
+          Version: "2012-10-17"
+          Statement:
+            - Sid: PublicReadForGetBucketObjects
+              Effect: Allow
+              Principal: "*"
+              Action: "s3:GetObject"
+              Resource: "arn:aws:s3:::${self:provider.environment.FITNESS_IMAGES_S3_BUCKET}/*"
+        Bucket: !Ref AttachmentsBucket
