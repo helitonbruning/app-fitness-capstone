@@ -42,7 +42,7 @@ functions:
       - http:
           method: get
           path: fitness/available
-          cors: false
+          cors: true
           authorizer: Auth
     iamRoleStatements:
       - Effect: Allow
