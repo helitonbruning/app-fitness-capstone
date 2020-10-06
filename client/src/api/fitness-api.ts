@@ -4,6 +4,7 @@ import Axios from 'axios'
 
 export async function getAvailableFitness(idToken: string): Promise<Fitness[]> {
   console.log('Fetching available Fitness')
+  console.log(`Bearer ${idToken}`)
 
   const response = await Axios.get(`${apiEndpoint}/fitness/available`, {
     headers: {
